@@ -1,0 +1,101 @@
+services:
+  # Redis for caching and session management
+  redis:
+    image: redis:7-alpine
+    container_name: mediassist_redis
+    restart: unless-stopped
+    ports:
+      - "6379:6379"
+    volumes:
+      - redis_data:/data
+    networks:
+      - mediassist_network
+
+  # MinIO for file storage
+  minio:
+    image: minio/minio:latest
+    container_name: mediassist_minio
+    restart: unless-stopped
+    environment:
+      - MINIO_ROOT_USER=minioadmin
+      - MINIO_ROOT_PASSWORD=minioadmin123
+    ports:
+      - "9000:9000"
+      - "9001:9001"
+    volumes:
+      - minio_data:/data
+    command: server /data --console-address ":9001"
+    networks:
+      - mediassist_network
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:9000/minio/health/live"]
+      interval: 30s
+      timeout: 20s
+      retries: 3
+
+  # Main API Service (SQLite-based)
+  api:
+    build:
+      context: ./services/api
+      dockerfile: Dockerfile
+    container_name: mediassist_api
+    restart: unless-stopped
+    environment:
+      - DATABASE_URL=sqlite:///./data/mediassist.db
+      - SECRET_KEY=your-super-secret-jwt-key-change-in-production
+      - REDIS_URL=redis://redis:6379/0
+      - MINIO_ENDPOINT=minio:9000
+      - MINIO_ACCESS_KEY=minioadmin
+      - MINIO_SECRET_KEY=minioadmin123
+      - MINIO_BUCKET=mediassist
+    ports:
+      - "8000:8000"
+    volumes:
+      - api_data:/app/data
+      - ./services/api/uploads:/app/uploads
+    depends_on:
+      - redis
+      - minio
+    networks:
+      - mediassist_network
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8000/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+
+  # Web Dashboard
+  dashboard:
+    build:
+      context: ./web/dashboard
+      dockerfile: Dockerfile
+    container_name: mediassist_dashboard
+    restart: unless-stopped
+    environment:
+      - API_BASE_URL=http://api:8000
+    ports:
+      - "8501:8501"
+    depends_on:
+      - api
+    networks:
+      - mediassist_network
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8501/"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+
+volumes:
+  redis_data:
+    driver: local
+  minio_data:
+    driver: local
+  api_data:
+    driver: local
+
+networks:
+  mediassist_network:
+    driver: bridge
+    ipam:
+      config:
+        - subnet: 172.20.0.0/16
